@@ -93,7 +93,7 @@ class Api
     protected function _initialize()
     {
         //跨域请求检测
-        check_cors_request();
+       // check_cors_request();
 
         // 检测IP是否允许
         check_ip_allowed();
