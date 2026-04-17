@@ -1,0 +1,256 @@
+<?php
+
+namespace app\api\controller;
+
+/**
+ * 诸天仙途 - 任务系统API
+ * 处理剧情任务、日常任务、成就等
+ */
+class Task extends Api
+{
+    protected $noNeedLogin = ['*'];
+    protected $noNeedRight = '*';
+
+    /**
+     * 获取任务列表
+     */
+    public function list()
+    {
+        $playerId = $this->request->get('player_id', 0, 'intval');
+        $taskType = $this->request->get('type', 'all', 'trim');
+        
+        $tasks = [
+            // 剧情任务
+            [
+                'id' => 'story_001',
+                'code' => 'story_chapter1',
+                'name' => '初入仙途·第一章',
+                'type' => 'story',
+                'desc' => '来到牧羊山脚下的青云镇',
+                'status' => 'in_progress',
+                'progress' => 2,
+                'target' => 5,
+                'rewards' => ['exp' => 500, 'lingshi' => 100, 'daojin' => 50],
+                'deadline' => null
+            ],
+            // 日常任务
+            [
+                'id' => 'daily_001',
+                'code' => 'daily_kill_wolf',
+                'name' => '每日斩妖',
+                'type' => 'daily',
+                'desc' => '击杀10只青纹狼',
+                'status' => 'pending',
+                'progress' => 0,
+                'target' => 10,
+                'rewards' => ['exp' => 100, 'lingshi' => 20],
+                'deadline' => strtotime('tomorrow')
+            ],
+            [
+                'id' => 'daily_002',
+                'code' => 'daily_practice',
+                'name' => '每日修炼',
+                'type' => 'daily',
+                'desc' => '完成修炼10次',
+                'status' => 'pending',
+                'progress' => 0,
+                'target' => 10,
+                'rewards' => ['exp' => 50, 'daojin' => 10],
+                'deadline' => strtotime('tomorrow')
+            ],
+            // 周常任务
+            [
+                'id' => 'weekly_001',
+                'code' => 'weekly_boss',
+                'name' => '周常·首领挑战',
+                'type' => 'weekly',
+                'desc' => '击败世界BOSS 1次',
+                'status' => 'pending',
+                'progress' => 0,
+                'target' => 1,
+                'rewards' => ['exp' => 1000, 'lingshi' => 500, 'item' => '稀有宝箱'],
+                'deadline' => strtotime('next Sunday')
+            ],
+            // 成就
+            [
+                'id' => 'achieve_001',
+                'code' => 'first_kill',
+                'name' => '初试锋芒',
+                'type' => 'achievement',
+                'desc' => '完成首次击杀',
+                'status' => 'completed',
+                'progress' => 1,
+                'target' => 1,
+                'rewards' => ['daojin' => 20],
+                'completed_time' => time() - 86400
+            ],
+            [
+                'id' => 'achieve_002',
+                'code' => 'first_breakthrough',
+                'name' => '突破初境',
+                'type' => 'achievement',
+                'desc' => '首次突破境界',
+                'status' => 'pending',
+                'progress' => 0,
+                'target' => 1,
+                'rewards' => ['daojin' => 100]
+            ]
+        ];
+        
+        // 筛选类型
+        if ($taskType != 'all') {
+            $tasks = array_filter($tasks, function($task) use ($taskType) {
+                return $task['type'] == $taskType;
+            });
+        }
+        
+        $this->success('获取成功', [
+            'tasks' => array_values($tasks),
+            'daily_count' => 3,
+            'daily_completed' => 0,
+            'weekly_count' => 2,
+            'weekly_completed' => 0
+        ]);
+    }
+
+    /**
+     * 接受任务
+     */
+    public function accept()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $taskId = $this->request->post('task_id', '', 'trim');
+        
+        if (empty($taskId)) {
+            $this->error('任务ID不能为空');
+        }
+        
+        $result = [
+            'task_id' => $taskId,
+            'accepted' => true,
+            'accept_time' => time()
+        ];
+        
+        $this->success('接受成功', $result);
+    }
+
+    /**
+     * 提交任务
+     */
+    public function submit()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $taskId = $this->request->post('task_id', '', 'trim');
+        
+        if (empty($taskId)) {
+            $this->error('任务ID不能为空');
+        }
+        
+        // 验证任务是否完成
+        // 发放奖励
+        
+        $result = [
+            'task_id' => $taskId,
+            'submitted' => true,
+            'submit_time' => time(),
+            'rewards' => [
+                'exp' => 100,
+                'lingshi' => 50,
+                'daojin' => 20
+            ]
+        ];
+        
+        $this->success('提交成功', $result);
+    }
+
+    /**
+     * 更新任务进度
+     */
+    public function updateProgress()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $taskId = $this->request->post('task_id', '', 'trim');
+        $progress = $this->request->post('progress', 0, 'intval');
+        
+        $result = [
+            'task_id' => $taskId,
+            'progress' => $progress,
+            'updated_time' => time(),
+            'is_completed' => ($progress >= 100)
+        ];
+        
+        $this->success('更新成功', $result);
+    }
+
+    /**
+     * 获取任务详情
+     */
+    public function detail()
+    {
+        $taskId = $this->request->get('task_id', '', 'trim');
+        
+        $task = [
+            'id' => $taskId,
+            'name' => '初入仙途·第一章',
+            'type' => 'story',
+            'desc' => '来到牧羊山脚下的青云镇',
+            'steps' => [
+                ['id' => 1, 'name' => '前往青云镇', 'status' => 'completed'],
+                ['id' => 2, 'name' => '寻找老村长', 'status' => 'completed'],
+                ['id' => 3, 'name' => '了解修仙界', 'status' => 'in_progress'],
+                ['id' => 4, 'name' => '完成新手修炼', 'status' => 'pending'],
+                ['id' => 5, 'name' => '选择修炼道路', 'status' => 'pending']
+            ],
+            'rewards' => ['exp' => 500, 'lingshi' => 100, 'daojin' => 50],
+            'npc' => ['id' => 'old_village_head', 'name' => '老村长']
+        ];
+        
+        $this->success('获取成功', $task);
+    }
+
+    /**
+     * 获取成就列表
+     */
+    public function achievements()
+    {
+        $playerId = $this->request->get('player_id', 0, 'intval');
+        
+        $achievements = [
+            ['id' => 'ach_001', 'name' => '初试锋芒', 'desc' => '完成首次击杀', 'progress' => 1, 'target' => 1, 'reward' => 20, 'completed' => true],
+            ['id' => 'ach_002', 'name' => '突破初境', 'desc' => '首次突破境界', 'progress' => 0, 'target' => 1, 'reward' => 100, 'completed' => false],
+            ['id' => 'ach_003', 'name' => '万元户', 'desc' => '累计获得10000灵石', 'progress' => 3500, 'target' => 10000, 'reward' => 200, 'completed' => false],
+            ['id' => 'ach_004', 'name' => '杀戮机器', 'desc' => '累计击杀1000只怪物', 'progress' => 150, 'target' => 1000, 'reward' => 500, 'completed' => false]
+        ];
+        
+        $this->success('获取成功', [
+            'achievements' => $achievements,
+            'total' => count($achievements),
+            'completed' => 1
+        ]);
+    }
+
+    /**
+     * 获取任务指引
+     */
+    public function guide()
+    {
+        $playerId = $this->request->get('player_id', 0, 'intval');
+        $currentStoryId = $this->request->get('current_story_id', 1, 'intval');
+        
+        $guide = [
+            'main_task' => [
+                'id' => 'story_001',
+                'name' => '初入仙途·第一章',
+                'next_step' => '了解修仙界',
+                'npc_name' => '老村长',
+                'location' => '青云镇广场'
+            ],
+            'side_tasks' => [
+                ['id' => 'daily_001', 'name' => '每日斩妖', 'progress' => '0/10'],
+                ['id' => 'daily_002', 'name' => '每日修炼', 'progress' => '0/10']
+            ]
+        ];
+        
+        $this->success('获取成功', $guide);
+    }
+}

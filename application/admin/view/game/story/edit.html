@@ -1,0 +1,63 @@
+<form id="edit-form" class="form-horizontal" role="form" data-toggle="validator" method="POST" action="">
+    {:token()}
+    <input type="hidden" name="row[id]" value="{$row.id|htmlentities}">
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Chapter')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-chapter" class="form-control" name="row[chapter]" type="number" value="{$row.chapter|htmlentities}">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Title')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-title" data-rule="required" class="form-control" name="row[title]" type="text" value="{$row.title|htmlentities}">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Type')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <select id="c-type" class="form-control" name="row[type]">
+                <option value="main" {if $row.type=='main'}selected{/if}>{:__('Main')}</option>
+                <option value="branch" {if $row.type=='branch'}selected{/if}>{:__('Branch')}</option>
+                <option value="event" {if $row.type=='event'}selected{/if}>{:__('Event')}</option>
+            </select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Content')}:</label>
+        <div class="col-xs-12 col-sm-8">
+            <textarea id="c-content" data-rule="required" class="form-control" name="row[content]" rows="5">{$row.content|htmlentities}</textarea>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Choices')}:</label>
+        <div class="col-xs-12 col-sm-8">
+            <textarea id="c-choices" class="form-control" name="row[choices]" rows="3">{$row.choices|htmlentities}</textarea>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Next_id')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-next_id" class="form-control" name="row[next_id]" type="number" value="{$row.next_id|htmlentities}">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Sort')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-sort" class="form-control" name="row[sort]" type="number" value="{$row.sort|htmlentities}">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Status')}:</label>
+        <div class="col-xs-12 col-sm-8">
+            {:build_radios('row[status]', ['normal'=>__('Normal'), 'hidden'=>__('Hidden')], $row['status'])}
+        </div>
+    </div>
+    <div class="form-group layer-footer">
+        <label class="control-label col-xs-12 col-sm-2"></label>
+        <div class="col-xs-12 col-sm-8">
+            <button type="submit" class="btn btn-primary btn-embossed disabled">{:__('OK')}</button>
+            <button type="reset" class="btn btn-default btn-embossed">{:__('Reset')}</button>
+        </div>
+    </div>
+</form>

@@ -1,0 +1,79 @@
+<form id="add-form" class="form-horizontal" role="form" data-toggle="validator" method="POST" action="">
+    {:token()}
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Name')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-name" data-rule="required" class="form-control" name="row[name]" type="text" value="">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Type')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-type" class="form-control" name="row[type]" type="text" value="item">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Price')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-price" class="form-control" name="row[price]" type="number" value="0">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Currency')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <select id="c-currency" class="form-control" name="row[currency]">
+                <option value="gold">{:__('Gold')}</option>
+                <option value="diamond">{:__('Diamond')}</option>
+                <option value="rmb">{:__('Rmb')}</option>
+            </select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Description')}:</label>
+        <div class="col-xs-12 col-sm-8">
+            <textarea id="c-description" class="form-control" name="row[description]" rows="2"></textarea>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Stock')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-stock" class="form-control" name="row[stock]" type="number" value="-1" placeholder="-1表示无限">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Limit_type')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <select id="c-limit_type" class="form-control" name="row[limit_type]">
+                <option value="none">{:__('None')}</option>
+                <option value="daily">{:__('Daily')}</option>
+                <option value="weekly">{:__('Weekly')}</option>
+                <option value="monthly">{:__('Monthly')}</option>
+            </select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Limit_count')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-limit_count" class="form-control" name="row[limit_count]" type="number" value="0">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Sort')}:</label>
+        <div class="col-xs-12 col-sm-4">
+            <input id="c-sort" class="form-control" name="row[sort]" type="number" value="0">
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="control-label col-xs-12 col-sm-2">{:__('Status')}:</label>
+        <div class="col-xs-12 col-sm-8">
+            {:build_radios('row[status]', ['normal'=>__('Normal'), 'hidden'=>__('Hidden'), 'soldout'=>__('Soldout')], 'normal')}
+        </div>
+    </div>
+    <div class="form-group layer-footer">
+        <label class="control-label col-xs-12 col-sm-2"></label>
+        <div class="col-xs-12 col-sm-8">
+            <button type="submit" class="btn btn-primary btn-embossed disabled">{:__('OK')}</button>
+            <button type="reset" class="btn btn-default btn-embossed">{:__('Reset')}</button>
+        </div>
+    </div>
+</form>

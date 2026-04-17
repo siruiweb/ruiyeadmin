@@ -1,0 +1,994 @@
+﻿<?php
+
+namespace app\api\controller;
+
+/**
+ * 诸天仙途 - X306-X311 战斗系统重构
+ * 包含：气血数据模型、灵气数据模型、战斗判定、状态模糊化、跨境界战斗
+ */
+class Battle extends Api
+{
+    protected $noNeedLogin = ['*'];
+    protected $noNeedRight = '*';
+
+    // 境界等级映射
+    private $realmLevels = [
+        '练体期' => 1, '练气期' => 2, '筑基期' => 3, '金丹期' => 4,
+        '元婴期' => 5, '化神期' => 6, '大乘期' => 7, '渡劫期' => 8,
+        '真仙境' => 9, '金仙境' => 10
+    ];
+
+    // 敌人模板库
+    private $enemyTemplates = [
+        'wolf' => ['name' => '青纹狼', 'level' => 1, 'hp' => 80, 'attack' => 12, 'defense' => 5, 'realm' => '练体期', 'realm_order' => 1, 'exp' => 20, 'lingshi' => 5],
+        'wolf_king' => ['name' => '青纹狼王', 'level' => 3, 'hp' => 200, 'attack' => 25, 'defense' => 12, 'realm' => '练体期', 'realm_order' => 1, 'exp' => 80, 'lingshi' => 30],
+        'bandit' => ['name' => '山贼', 'level' => 2, 'hp' => 120, 'attack' => 18, 'defense' => 8, 'realm' => '练气期', 'realm_order' => 2, 'exp' => 50, 'lingshi' => 20],
+        'elder' => ['name' => '筑基期散修', 'level' => 5, 'hp' => 300, 'attack' => 40, 'defense' => 20, 'realm' => '筑基期', 'realm_order' => 3, 'exp' => 150, 'lingshi' => 50],
+        'golden_core' => ['name' => '金丹期修士', 'level' => 8, 'hp' => 500, 'attack' => 80, 'defense' => 40, 'realm' => '金丹期', 'realm_order' => 4, 'exp' => 300, 'lingshi' => 100],
+        'boss_dragon' => ['name' => '妖龙', 'level' => 10, 'hp' => 1500, 'attack' => 120, 'defense' => 60, 'realm' => '元婴期', 'realm_order' => 5, 'exp' => 500, 'lingshi' => 200],
+    ];
+
+    // 绝境情感指令关键词
+    private $desperationCommands = ['不甘心', '拼死', '燃尽', '我不甘', '以命相搏', '哪怕死', '拼尽全力', '最后一击', '破釜沉舟', '同归于尽', '拉他垫背', '必杀一击'];
+
+    /**
+     * ========================================
+     * X306: 获取玩家战斗属性
+     * ========================================
+     */
+    public function getPlayerStats()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        
+        $player = $this->model->table('fa_player')->where('id', $playerId)->find();
+        if (!$player) {
+            return $this->error('玩家不存在');
+        }
+
+        // 获取境界加成
+        $realmBonus = $this->getRealmBonus($player['realm_name'] ?? '练体期');
+        
+        // 计算战斗属性（含境界加成）
+        $stats = [
+            'player_id' => $player['id'],
+            'player_name' => $player['player_name'],
+            // X306: 气血数据
+            'hp' => (int)($player['hp'] ?? $player['health'] ?? 100),
+            'max_hp' => (int)($player['max_hp'] ?? $player['max_health'] ?? 100),
+            'hp_percent' => $this->calcPercent($player['hp'] ?? $player['health'] ?? 100, $player['max_hp'] ?? $player['max_health'] ?? 100),
+            // X307: 灵气数据
+            'spirit_power' => (int)($player['spirit_power'] ?? $player['spirit'] ?? 10),
+            'max_sp' => (int)($player['max_sp'] ?? $player['max_spirit'] ?? 10),
+            'sp_percent' => $this->calcPercent($player['spirit_power'] ?? $player['spirit'] ?? 10, $player['max_sp'] ?? $player['max_spirit'] ?? 10),
+            // 基础属性
+            'attack' => (int)($player['attack'] ?? 10) + ($realmBonus['attack'] ?? 0),
+            'defense' => (int)($player['defense'] ?? 5) + ($realmBonus['defense'] ?? 0),
+            'speed' => (int)($player['speed'] ?? 10),
+            'crit_rate' => (float)($player['crit_rate'] ?? 5),
+            'dodge_rate' => (float)($player['dodge_rate'] ?? 5),
+            // X307: 境界数据
+            'realm' => $player['realm'] ?? $player['realm_name'] ?? '练体期',
+            'realm_order' => (int)($player['realm_order'] ?? $this->realmLevels[$player['realm_name'] ?? '练体期'] ?? 1),
+            'realm_level' => (int)($player['realm_level'] ?? 1),
+            // X310: 状态模糊化
+            'status' => $this->getStatusDescription($player['hp'] ?? $player['health'] ?? 100, $player['max_hp'] ?? $player['max_health'] ?? 100),
+            'spirit_status' => $this->getSpiritStatus($player['spirit_power'] ?? $player['spirit'] ?? 10, $player['max_sp'] ?? $player['max_spirit'] ?? 10),
+            // X311: 绝境判定
+            'is_desperation' => $this->isDesperation($player['hp'] ?? $player['health'] ?? 100, $player['max_hp'] ?? $player['max_health'] ?? 100, $player['spirit_power'] ?? $player['spirit'] ?? 10, $player['max_sp'] ?? $player['max_spirit'] ?? 10),
+        ];
+
+        // 境界压制信息
+        $stats['realm_info'] = [
+            'current_realm' => $stats['realm'],
+            'realm_order' => $stats['realm_order'],
+            'bonus' => $realmBonus
+        ];
+
+        return $this->success('获取成功', $stats);
+    }
+
+    /**
+     * ========================================
+     * X308: 开始战斗
+     * ========================================
+     */
+    public function start()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $enemyId = $this->request->post('enemy_id', 'wolf', 'trim');
+        
+        // 获取玩家数据
+        $player = $this->model->table('fa_player')->where('id', $playerId)->find();
+        if (!$player) {
+            return $this->error('玩家不存在');
+        }
+
+        // 生成敌人
+        $enemy = $this->enemyTemplates[$enemyId] ?? $this->enemyTemplates['wolf'];
+        $enemy['enemy_id'] = $enemyId;
+        $enemy['current_hp'] = $enemy['hp'];
+        $enemy['current_hp_percent'] = 100;
+
+        // 生成战斗ID
+        $battleId = 'battle_' . $playerId . '_' . time() . '_' . mt_rand(1000, 9999);
+        
+        // 初始化战斗状态
+        $battle = [
+            'battle_id' => $battleId,
+            'player_id' => $playerId,
+            'player' => [
+                'name' => $player['player_name'],
+                'hp' => (int)($player['hp'] ?? $player['health'] ?? 100),
+                'max_hp' => (int)($player['max_hp'] ?? $player['max_health'] ?? 100),
+                'spirit_power' => (int)($player['spirit_power'] ?? $player['spirit'] ?? 10),
+                'max_sp' => (int)($player['max_sp'] ?? $player['max_spirit'] ?? 10),
+                'attack' => (int)($player['attack'] ?? 10),
+                'defense' => (int)($player['defense'] ?? 5),
+                'realm' => $player['realm'] ?? $player['realm_name'] ?? '练体期',
+                'realm_order' => (int)($player['realm_order'] ?? $this->realmLevels[$player['realm_name'] ?? '练体期'] ?? 1),
+            ],
+            'enemy' => $enemy,
+            'round' => 0,
+            'logs' => [],
+            'start_time' => time(),
+            'status' => 'ongoing'
+        ];
+
+        // X310: 模糊化显示敌人状态（不显示具体数值）
+        $battle['enemy_fog'] = $this->foggyEnemyStatus($enemy);
+        
+        // X310: 模糊化显示玩家状态
+        $battle['player_fog'] = $this->foggyPlayerStatus($battle['player']);
+
+        // X311: 境界压制信息
+        $suppression = $this->calcSuppression($battle['player']['realm_order'], $enemy['realm_order']);
+        $battle['suppression_info'] = [
+            'player_suppress' => $suppression['player'],
+            'enemy_suppress' => $suppression['enemy'],
+            'description' => $suppression['desc'],
+            'can_penetrate' => $suppression['can_penetrate']
+        ];
+
+        // 添加战斗开始日志
+        $battle['logs'][] = [
+            'type' => 'system',
+            'content' => "【战斗开始】你遭遇了{$enemy['name']}！",
+            'time' => time()
+        ];
+        $battle['logs'][] = [
+            'type' => 'system',
+            'content' => $suppression['desc'],
+            'time' => time()
+        ];
+
+        return $this->success('战斗开始', $battle);
+    }
+
+    /**
+     * ========================================
+     * X309: 回合攻击
+     * X311: 跨境界战斗逻辑
+     * ========================================
+     */
+    public function attack()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $battleId = $this->request->post('battle_id', '', 'trim');
+        $skillId = $this->request->post('skill_id', 0, 'trim');
+        $customCommand = $this->request->post('command', '', 'trim');
+        
+        // 获取玩家数据
+        $player = $this->model->table('fa_player')->where('id', $playerId)->find();
+        if (!$player) {
+            return $this->error('玩家不存在');
+        }
+
+        // 模拟战斗状态（实际应从缓存/数据库读取）
+        $enemyHp = $this->request->post('enemy_hp', 80, 'intval');
+        $enemyMaxHp = $this->request->post('enemy_max_hp', 80, 'intval');
+        $enemyAttack = $this->request->post('enemy_attack', 12, 'intval');
+        $enemyDefense = $this->request->post('enemy_defense', 5, 'intval');
+        $enemyRealmOrder = $this->request->post('enemy_realm_order', 1, 'intval');
+        $playerHp = (int)($player['hp'] ?? $player['health'] ?? 100);
+        $playerMaxHp = (int)($player['max_hp'] ?? $player['max_health'] ?? 100);
+        $playerSpirit = (int)($player['spirit_power'] ?? $player['spirit'] ?? 10);
+        $playerMaxSp = (int)($player['max_sp'] ?? $player['max_spirit'] ?? 10);
+        $playerAttack = (int)($player['attack'] ?? 10);
+        $playerDefense = (int)($player['defense'] ?? 5);
+        $playerRealmOrder = (int)($player['realm_order'] ?? $this->realmLevels[$player['realm_name'] ?? '练体期'] ?? 1);
+
+        $round = $this->request->post('round', 0, 'intval') + 1;
+        $logs = [];
+
+        // ==================== 玩家攻击阶段 ====================
+        
+        // X311: 检查绝境翻盘条件
+        $hpPercent = ($playerHp / $playerMaxHp) * 100;
+        $spPercent = ($playerSpirit / $playerMaxSp) * 100;
+        $isDesperation = $this->isDesperation($playerHp, $playerMaxHp, $playerSpirit, $playerMaxSp);
+        $hasDesperationCommand = $this->checkDesperationCommand($customCommand);
+
+        // X311: 绝境翻盘判定
+        if ($isDesperation && $hasDesperationCommand) {
+            $logs[] = ['type' => 'system', 'content' => "【绝境爆发】\"{$customCommand}\" —— 你爆发出惊人意志！"];
+            $reversalResult = $this->triggerDesperationReversal($playerHp, $playerMaxHp);
+            if ($reversalResult['type'] === 'reversal') {
+                // 绝境反杀成功
+                $logs[] = ['type' => 'system', 'content' => "【命运判定】50% 反杀成功！"];
+                $logs[] = ['type' => 'system', 'content' => "你抓住最后的机会，一击必杀！"];
+                $logs[] = ['type' => 'system', 'content' => "【代价】{$reversalResult['cost_desc']}"];
+                return $this->success('绝境反杀！', [
+                    'round' => $round,
+                    'battle_result' => 'win',
+                    'is_reversal' => true,
+                    'reversal_type' => 'reversal',
+                    'enemy_hp' => 0,
+                    'enemy_hp_percent' => 0,
+                    'player_hp' => max(0, $playerHp - $reversalResult['self_damage']),
+                    'logs' => $logs,
+                    'rewards' => $this->calcRewards($enemyHp, $enemyMaxHp)
+                ]);
+            } elseif ($reversalResult['type'] === 'draw') {
+                // 同归于尽
+                $logs[] = ['type' => 'system', 'content' => "【命运判定】30% 同归于尽！"];
+                $logs[] = ['type' => 'system', 'content' => "你与敌人同时倒下..."];
+                $logs[] = ['type' => 'system', 'content' => "【代价】{$reversalResult['cost_desc']}"];
+                return $this->success('同归于尽', [
+                    'round' => $round,
+                    'battle_result' => 'draw',
+                    'is_reversal' => true,
+                    'reversal_type' => 'draw',
+                    'enemy_hp' => 0,
+                    'player_hp' => 0,
+                    'logs' => $logs,
+                    'rewards' => ['exp' => 0, 'lingshi' => 0]
+                ]);
+            } else {
+                // 徒劳无功
+                $logs[] = ['type' => 'system', 'content' => "【命运判定】20% 反击失败！"];
+                $logs[] = ['type' => 'system', 'content' => "你试图反击，但力竭倒下..."];
+                $logs[] = ['type' => 'system', 'content' => "【代价】{$reversalResult['cost_desc']}"];
+            }
+        }
+
+        // X309: 计算玩家伤害
+        // 伤害公式: damage = attack * random(0.8-1.2) - defense
+        // X311: 境界压制系数
+        $suppression = $this->getSuppressionFactor($playerRealmOrder, $enemyRealmOrder);
+        
+        if ($suppression['factor'] <= 0) {
+            $logs[] = ['type' => 'player', 'content' => "你发起攻击！"];
+            $logs[] = ['type' => 'system', 'content' => "【无法破防】敌人境界远高于你，攻击被轻松化解！"];
+        } else {
+            $baseDamage = $playerAttack;
+            $randomFactor = mt_rand(80, 120) / 100; // 0.8-1.2随机
+            $defenseReduction = $enemyDefense * 0.5; // 防御减免50%
+            $rawDamage = $baseDamage * $randomFactor - $defenseReduction;
+            $finalDamage = max(1, floor($rawDamage * $suppression['factor']));
+
+            // 暴击判定
+            $isCrit = false;
+            $critRate = (float)($player['crit_rate'] ?? 5) / 100;
+            if (mt_rand(1, 100) <= $critRate * 100) {
+                $isCrit = true;
+                $finalDamage *= 2;
+            }
+
+            $logs[] = ['type' => 'player', 'content' => "你发起攻击！"];
+            
+            if ($isCrit) {
+                $logs[] = ['type' => 'system', 'content' => "【暴击！】造成了 {$finalDamage} 点伤害！"];
+            } else {
+                $logs[] = ['type' => 'system', 'content' => "造成了 {$finalDamage} 点伤害！" . ($suppression['factor'] != 1.0 ? " ({$suppression['desc']})" : "")];
+            }
+
+            $enemyHp = max(0, $enemyHp - $finalDamage);
+        }
+
+        // 检查敌人是否死亡
+        if ($enemyHp <= 0) {
+            $logs[] = ['type' => 'system', 'content' => "【胜利】你击败了敌人！"];
+            $rewards = $this->calcRewards($enemyHp, $enemyMaxHp);
+            $this->saveBattleRecord($playerId, 'pve', 'win', $finalDamage ?? 0, $rewards, $playerHp, $playerMaxHp, $player['realm'] ?? '练体期');
+            return $this->success('战斗胜利', [
+                'round' => $round,
+                'battle_result' => 'win',
+                'enemy_hp' => 0,
+                'enemy_hp_percent' => 0,
+                'player_hp' => $playerHp,
+                'player_hp_percent' => $this->calcPercent($playerHp, $playerMaxHp),
+                'logs' => $logs,
+                'rewards' => $rewards
+            ]);
+        }
+
+        // ==================== 敌人攻击阶段 ====================
+        $enemySuppression = $this->getSuppressionFactor($enemyRealmOrder, $playerRealmOrder);
+        
+        $enemyBaseDamage = $enemyAttack;
+        $enemyRandomFactor = mt_rand(80, 120) / 100;
+        $enemyDefenseReduction = $playerDefense * 0.5;
+        $enemyRawDamage = $enemyBaseDamage * $enemyRandomFactor - $enemyDefenseReduction;
+        $enemyFinalDamage = max(1, floor($enemyRawDamage * $enemySuppression['factor']));
+
+        // 闪避判定
+        $dodgeRate = (float)($player['dodge_rate'] ?? 5) / 100;
+        $isDodge = mt_rand(1, 100) <= $dodgeRate * 100;
+        
+        if ($isDodge) {
+            $logs[] = ['type' => 'system', 'content' => "敌人的攻击被你闪避了！"];
+        } else {
+            $logs[] = ['type' => 'enemy', 'content' => "敌人发起攻击！"];
+            if ($enemySuppression['factor'] > 1.0) {
+                $logs[] = ['type' => 'system', 'content' => "【境界压制】你受到了 {$enemyFinalDamage} 点伤害！({$enemySuppression['desc']})"];
+            } else {
+                $logs[] = ['type' => 'system', 'content' => "你受到了 {$enemyFinalDamage} 点伤害！"];
+            }
+            $playerHp = max(0, $playerHp - $enemyFinalDamage);
+        }
+
+        // 检查玩家是否死亡
+        if ($playerHp <= 0) {
+            $logs[] = ['type' => 'system', 'content' => "【败北】你倒下了..."];
+            $this->saveBattleRecord($playerId, 'pve', 'lose', $finalDamage ?? 0, ['exp' => 0, 'lingshi' => 0], $playerHp, $playerMaxHp, $player['realm'] ?? '练体期');
+            
+            // X320: 增加复活次数记录
+            $currentReviveCount = (int)(\think\Db::table('fa_player')->where('id', $playerId)->value('revive_count') ?? 0);
+            $maxReviveCount = (int)(\think\Db::table('fa_player')->where('id', $playerId)->value('max_revive_count') ?? 3);
+            $newReviveCount = $currentReviveCount + 1;
+            $canRevive = $newReviveCount <= $maxReviveCount;
+            
+            // 更新玩家复活次数
+            \think\Db::table('fa_player')->where('id', $playerId)->update([
+                'revive_count' => $newReviveCount,
+                'updatetime' => time()
+            ]);
+            
+            // X320: 记录复活日志到fa_xiuxian_revival_log
+            \think\Db::table('fa_xiuxian_revival_log')->insert([
+                'player_id' => $playerId,
+                'death_time' => time(),
+                'revival_time' => 0,
+                'realm' => $player['realm'] ?? '练体期',
+                'revival_count' => $newReviveCount,
+                'createtime' => time()
+            ]);
+            
+            // X320: 返回复活限制信息
+            $reviveInfo = [
+                'revive_count' => $newReviveCount,
+                'max_revive_count' => $maxReviveCount,
+                'can_revive' => $canRevive,
+                'remaining_revives' => max(0, $maxReviveCount - $newReviveCount),
+                'revive_limit_desc' => $canRevive 
+                    ? "本次战斗复活次数：{$newReviveCount}/{$maxReviveCount}，还可以复活" . ($maxReviveCount - $newReviveCount) . "次"
+                    : "复活次数已用尽（{$newReviveCount}/{$maxReviveCount}），无法继续复活，必须回城休息"
+            ];
+            
+            return $this->success('战斗失败', [
+                'round' => $round,
+                'battle_result' => 'lose',
+                'enemy_hp' => $enemyHp,
+                'enemy_hp_percent' => $this->calcPercent($enemyHp, $enemyMaxHp),
+                'player_hp' => 0,
+                'player_hp_percent' => 0,
+                'logs' => $logs,
+                'revive_info' => $reviveInfo
+            ]);
+        }
+
+        return $this->success('回合结束', [
+            'round' => $round,
+            'battle_result' => 'ongoing',
+            'enemy_hp' => $enemyHp,
+            'enemy_hp_percent' => $this->calcPercent($enemyHp, $enemyMaxHp),
+            'player_hp' => $playerHp,
+            'player_hp_percent' => $this->calcPercent($playerHp, $playerMaxHp),
+            // X310: 模糊化状态
+            'enemy_status' => $this->getFuzzyStatus($enemyHp, $enemyMaxHp),
+            'player_status' => $this->getFuzzyStatus($playerHp, $playerMaxHp),
+            'logs' => $logs
+        ]);
+    }
+
+    /**
+     * ========================================
+     * X308: 发送战斗指令
+     * ========================================
+     */
+    public function sendCommand()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $battleId = $this->request->post('battle_id', '', 'trim');
+        $command = $this->request->post('command', '', 'trim');
+        
+        if (empty($command)) {
+            return $this->error('指令不能为空');
+        }
+
+        // 解析指令
+        $parsed = $this->parseCommand($command);
+        
+        return $this->success('指令已发送', [
+            'command' => $command,
+            'parsed' => $parsed,
+            'timestamp' => time()
+        ]);
+    }
+
+    /**
+     * ========================================
+     * X309: 使用技能攻击
+     * ========================================
+     */
+    public function useSkill()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $skillId = $this->request->post('skill_id', '', 'trim');
+        $enemyHp = $this->request->post('enemy_hp', 80, 'intval');
+        $enemyMaxHp = $this->request->post('enemy_max_hp', 80, 'intval');
+        
+        // 获取玩家数据
+        $player = $this->model->table('fa_player')->where('id', $playerId)->find();
+        if (!$player) {
+            return $this->error('玩家不存在');
+        }
+
+        // 技能库
+        $skills = [
+            'fire_palm' => ['name' => '烈火掌', 'cost' => 10, 'damage_factor' => 1.5, 'crit_bonus' => 5],
+            'thunder_fist' => ['name' => '雷霆拳', 'cost' => 15, 'damage_factor' => 1.8, 'crit_bonus' => 10],
+            'sword_array' => ['name' => '剑阵', 'cost' => 25, 'damage_factor' => 2.0, 'ignore_defense' => true],
+            'spirit_blade' => ['name' => '灵力刀', 'cost' => 30, 'damage_factor' => 2.5, 'ignore_defense' => true],
+            'void_strike' => ['name' => '虚空一击', 'cost' => 40, 'damage_factor' => 3.0],
+            'immortal_sword' => ['name' => '仙人一剑', 'cost' => 50, 'damage_factor' => 4.0],
+            'life_burning' => ['name' => '燃命一击', 'cost' => 60, 'damage_factor' => 5.0, 'health_cost' => 20],
+        ];
+
+        $skill = $skills[$skillId] ?? null;
+        if (!$skill) {
+            return $this->error('技能不存在');
+        }
+
+        // 检查灵气
+        $playerSpirit = (int)($player['spirit_power'] ?? $player['spirit'] ?? 10);
+        if ($playerSpirit < $skill['cost']) {
+            return $this->error('灵气不足，无法使用此技能');
+        }
+
+        // 计算伤害
+        $baseDamage = (int)($player['attack'] ?? 10);
+        $damage = floor($baseDamage * $skill['damage_factor']);
+        
+        if (!isset($skill['ignore_defense'])) {
+            $damage = max(1, $damage - (int)($player['defense'] ?? 5) * 0.3);
+        }
+
+        $enemyHp = max(0, $enemyHp - $damage);
+
+        $result = [
+            'skill_name' => $skill['name'],
+            'damage' => $damage,
+            'spirit_cost' => $skill['cost'],
+            'enemy_hp' => $enemyHp,
+            'enemy_hp_percent' => $this->calcPercent($enemyHp, $enemyMaxHp),
+            'player_spirit' => $playerSpirit - $skill['cost'],
+            'is_critical' => mt_rand(1, 100) <= ($skill['crit_bonus'] ?? 0),
+            'battle_result' => $enemyHp <= 0 ? 'win' : 'ongoing'
+        ];
+
+        return $this->success('技能释放成功', $result);
+    }
+
+    /**
+     * ========================================
+     * X309: 战斗结束
+     * ========================================
+     */
+    public function end()
+    {
+        $playerId = $this->request->post('player_id', 0, 'intval');
+        $battleId = $this->request->post('battle_id', '', 'trim');
+        $result = $this->request->post('result', 'win', 'trim');
+        $damageDealt = $this->request->post('damage_dealt', 0, 'intval');
+        $enemyHp = $this->request->post('enemy_hp', 0, 'intval');
+        $enemyMaxHp = $this->request->post('enemy_max_hp', 100, 'intval');
+        
+        // 获取玩家数据
+        $player = $this->model->table('fa_player')->where('id', $playerId)->find();
+        if (!$player) {
+            return $this->error('玩家不存在');
+        }
+
+        // 计算奖励
+        $rewards = $this->calcRewards($enemyHp, $enemyMaxHp);
+        
+        // 更新玩家属性
+        if ($result === 'win') {
+            $updateData = [
+                'exp' => ($player['exp'] ?? 0) + $rewards['exp'],
+                'lingshi' => ($player['lingshi'] ?? 0) + $rewards['lingshi'],
+                'updatetime' => time()
+            ];
+            $this->model->table('fa_player')->where('id', $playerId)->update($updateData);
+        }
+
+        // 保存战斗记录
+        $this->saveBattleRecord($playerId, 'pve', $result, $damageDealt, $rewards, 
+            $this->request->post('player_hp', 100), 
+            $this->request->post('player_max_hp', 100), 
+            $player['realm'] ?? '练体期');
+
+        return $this->success('战斗结束', [
+            'result' => $result,
+            'rewards' => $rewards,
+            'player_exp' => ($player['exp'] ?? 0) + ($result === 'win' ? $rewards['exp'] : 0),
+            'player_lingshi' => ($player['lingshi'] ?? 0) + ($result === 'win' ? $rewards['lingshi'] : 0)
+        ]);
+    }
+
+    /**
+     * ========================================
+     * X308: 获取敌人列表
+     * ========================================
+     */
+    public function enemies()
+    {
+        $playerLevel = $this->request->get('player_level', 1, 'intval');
+        $playerRealm = $this->request->get('player_realm', '练体期', 'trim');
+        $playerRealmOrder = $this->realmLevels[$playerRealm] ?? 1;
+
+        $enemies = [];
+        foreach ($this->enemyTemplates as $id => $enemy) {
+            // X311: 根据境界过滤敌人（±2个境界）
+            $realmDiff = $enemy['realm_order'] - $playerRealmOrder;
+            if ($realmDiff > 2) continue; // 跳过太强的敌人
+            
+            $enemies[] = [
+                'id' => $id,
+                'name' => $enemy['name'],
+                'level' => $enemy['level'],
+                // X310: 模糊化显示
+                'status' => $this->getFuzzyStatus($enemy['hp'], $enemy['hp']),
+                'realm' => $enemy['realm'],
+                'realm_desc' => $realmDiff > 0 ? '【较强】' : ($realmDiff < 0 ? '【较弱】' : '【相当】'),
+                'rewards' => [
+                    'exp' => $enemy['exp'],
+                    'lingshi' => $enemy['lingshi']
+                ]
+            ];
+        }
+
+        return $this->success('获取成功', ['enemies' => $enemies]);
+    }
+
+    /**
+     * ========================================
+     * X306-X307: 获取玩家状态（完整数据）
+     * ========================================
+     */
+    public function status()
+    {
+        $playerId = $this->request->get('player_id', 0, 'intval');
+        
+        $player = $this->model->table('fa_player')->where('id', $playerId)->find();
+        if (!$player) {
+            return $this->error('玩家不存在');
+        }
+
+        // 完整状态数据
+        $status = [
+            // X306: 气血
+            'hp' => (int)($player['hp'] ?? $player['health'] ?? 100),
+            'max_hp' => (int)($player['max_hp'] ?? $player['max_health'] ?? 100),
+            'hp_percent' => $this->calcPercent($player['hp'] ?? $player['health'] ?? 100, $player['max_hp'] ?? $player['max_health'] ?? 100),
+            'hp_status' => $this->getHealthStatus($player['hp'] ?? $player['health'] ?? 100, $player['max_hp'] ?? $player['max_health'] ?? 100),
+            // X307: 灵气
+            'spirit_power' => (int)($player['spirit_power'] ?? $player['spirit'] ?? 10),
+            'max_sp' => (int)($player['max_sp'] ?? $player['max_spirit'] ?? 10),
+            'sp_percent' => $this->calcPercent($player['spirit_power'] ?? $player['spirit'] ?? 10, $player['max_sp'] ?? $player['max_spirit'] ?? 10),
+            'sp_status' => $this->getSpiritStatus($player['spirit_power'] ?? $player['spirit'] ?? 10, $player['max_sp'] ?? $player['max_spirit'] ?? 10),
+            // 属性
+            'attack' => (int)($player['attack'] ?? 10),
+            'defense' => (int)($player['defense'] ?? 5),
+            'speed' => (int)($player['speed'] ?? 10),
+            'crit_rate' => (float)($player['crit_rate'] ?? 5),
+            'dodge_rate' => (float)($player['dodge_rate'] ?? 5),
+            // X307: 境界
+            'realm' => $player['realm'] ?? $player['realm_name'] ?? '练体期',
+            'realm_order' => (int)($player['realm_order'] ?? $this->realmLevels[$player['realm_name'] ?? '练体期'] ?? 1),
+            'realm_level' => (int)($player['realm_level'] ?? 1),
+            // X311: 绝境判定
+            'is_desperation' => $this->isDesperation(
+                $player['hp'] ?? $player['health'] ?? 100,
+                $player['max_hp'] ?? $player['max_health'] ?? 100,
+                $player['spirit_power'] ?? $player['spirit'] ?? 10,
+                $player['max_sp'] ?? $player['max_spirit'] ?? 10
+            ),
+            // X310: 综合描述
+            'composite_status' => $this->getCompositeStatus(
+                $player['hp'] ?? $player['health'] ?? 100,
+                $player['max_hp'] ?? $player['max_health'] ?? 100,
+                $player['spirit_power'] ?? $player['spirit'] ?? 10,
+                $player['max_sp'] ?? $player['max_spirit'] ?? 10
+            )
+        ];
+
+        return $this->success('获取成功', $status);
+    }
+
+    // ==================== 私有辅助方法 ====================
+
+    /**
+     * X306: 获取气血状态描述
+     */
+    private function getHealthStatus($hp, $maxHp)
+    {
+        $percent = $this->calcPercent($hp, $maxHp);
+        
+        if ($percent > 80) return '气血充盈';
+        if ($percent > 60) return '状态良好';
+        if ($percent > 40) return '轻伤';
+        if ($percent > 20) return '中伤';
+        if ($percent > 10) return '重伤';
+        if ($percent > 0) return '濒死';
+        return '已死亡';
+    }
+
+    /**
+     * X307: 获取灵气状态描述
+     */
+    private function getSpiritStatus($sp, $maxSp)
+    {
+        $percent = $this->calcPercent($sp, $maxSp);
+        
+        if ($percent > 80) return '灵气充沛';
+        if ($percent > 60) return '灵气充足';
+        if ($percent > 40) return '轻微消耗';
+        if ($percent > 20) return '消耗过半';
+        if ($percent > 5) return '灵气将竭';
+        if ($percent > 0) return '近乎枯竭';
+        return '灵气耗尽';
+    }
+
+    /**
+     * X310: 获取综合状态描述
+     */
+    private function getCompositeStatus($hp, $maxHp, $sp, $maxSp)
+    {
+        $hpPercent = $this->calcPercent($hp, $maxHp);
+        $spPercent = $this->calcPercent($sp, $maxSp);
+        
+        if ($hpPercent > 80 && $spPercent > 80) {
+            return '【巅峰】气血灵气皆充沛，战斗力处于巅峰状态';
+        }
+        if ($spPercent <= 30 && $hpPercent > 50) {
+            return '【气虚】灵气不足，难以催动高阶功法';
+        }
+        if ($hpPercent <= 20 && $spPercent <= 30) {
+            return '【绝境】气血与灵气皆告急，命悬一线！';
+        }
+        if ($hpPercent <= 50) {
+            return '【受伤】状态下滑，需要恢复';
+        }
+        return '【正常】状态良好，可继续战斗';
+    }
+
+    /**
+     * X310: 模糊化状态
+     */
+    private function getFuzzyStatus($current, $max)
+    {
+        $percent = $this->calcPercent($current, $max);
+        
+        if ($percent > 80) return ['level' => 'high', 'desc' => '状态极佳', 'percent' => $percent];
+        if ($percent > 50) return ['level' => 'medium', 'desc' => '状态一般', 'percent' => $percent];
+        if ($percent > 20) return ['level' => 'low', 'desc' => '状态堪忧', 'percent' => $percent];
+        return ['level' => 'critical', 'desc' => '命悬一线', 'percent' => $percent];
+    }
+
+    /**
+     * X310: 模糊化敌人状态
+     */
+    private function foggyEnemyStatus($enemy)
+    {
+        return [
+            'name' => $enemy['name'],
+            'level' => $enemy['level'],
+            'realm' => $enemy['realm'],
+            'status' => $this->getFuzzyStatus($enemy['hp'], $enemy['hp']),
+            // 隐藏具体数值
+            'hp_hidden' => true,
+            'attack_hidden' => true,
+            'defense_hidden' => true,
+        ];
+    }
+
+    /**
+     * X310: 模糊化玩家状态
+     */
+    private function foggyPlayerStatus($player)
+    {
+        return [
+            'name' => $player['name'],
+            'hp_status' => $this->getHealthStatus($player['hp'], $player['max_hp']),
+            'hp_percent' => $this->calcPercent($player['hp'], $player['max_hp']),
+            'sp_status' => $this->getSpiritStatus($player['spirit_power'], $player['max_sp']),
+            'sp_percent' => $this->calcPercent($player['spirit_power'], $player['max_sp']),
+            'realm' => $player['realm'],
+        ];
+    }
+
+    /**
+     * X311: 计算境界压制系数
+     */
+    private function calcSuppression($attackerRealm, $defenderRealm)
+    {
+        $diff = $attackerRealm - $defenderRealm;
+        
+        // 高境界压制低境界
+        if ($diff >= 3) {
+            return [
+                'player' => 2.0,
+                'enemy' => 0.3,
+                'desc' => '【绝对压制】你对敌人有绝对境界优势',
+                'can_penetrate' => true
+            ];
+        }
+        if ($diff > 0) {
+            return [
+                'player' => 1.0 + ($diff * 0.3),
+                'enemy' => 1.0 - ($diff * 0.3),
+                'desc' => "【境界压制】你对敌人有 {$diff} 个境界优势",
+                'can_penetrate' => true
+            ];
+        }
+        if ($diff < 0) {
+            $abs = abs($diff);
+            if ($abs >= 3) {
+                return [
+                    'player' => 0,
+                    'enemy' => 2.0,
+                    'desc' => '【无法破防】敌人境界远高于你',
+                    'can_penetrate' => false
+                ];
+            }
+            return [
+                'player' => 1.0 - ($abs * 0.3),
+                'enemy' => 1.0 + ($abs * 0.3),
+                'desc' => "【境界劣势】敌人高出你 {$abs} 个境界",
+                'can_penetrate' => $abs < 3
+            ];
+        }
+        
+        return [
+            'player' => 1.0,
+            'enemy' => 1.0,
+            'desc' => '【境界持平】双方实力相当',
+            'can_penetrate' => true
+        ];
+    }
+
+    /**
+     * X311: 获取压制系数
+     */
+    private function getSuppressionFactor($attackerRealm, $defenderRealm)
+    {
+        $diff = $attackerRealm - $defenderRealm;
+        
+        if ($diff >= 3) {
+            return ['factor' => 2.0, 'desc' => '绝对压制'];
+        }
+        if ($diff > 0) {
+            return ['factor' => 1.0 + ($diff * 0.3), 'desc' => "境界压制×{$diff}"];
+        }
+        if ($diff < 0) {
+            $abs = abs($diff);
+            if ($abs >= 3) {
+                return ['factor' => 0, 'desc' => '无法破防'];
+            }
+            return ['factor' => max(0, 1.0 - ($abs * 0.3)), 'desc' => "境界劣势"];
+        }
+        
+        return ['factor' => 1.0, 'desc' => '正常'];
+    }
+
+    /**
+     * X311: 检查绝境条件
+     */
+    private function isDesperation($hp, $maxHp, $sp, $maxSp)
+    {
+        $hpPercent = $this->calcPercent($hp, $maxHp);
+        $spPercent = $this->calcPercent($sp, $maxSp);
+        
+        // 气血≤20% 且 灵气≤30%
+        return $hp > 0 && $hpPercent <= 20 && $spPercent <= 30;
+    }
+
+    /**
+     * X311: 检查绝境情感指令
+     */
+    private function checkDesperationCommand($command)
+    {
+        if (empty($command)) return false;
+        
+        foreach ($this->desperationCommands as $keyword) {
+            if (mb_strpos($command, $keyword) !== false) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * X311: 触发绝境翻盘
+     */
+    private function triggerDesperationReversal($hp, $maxHp)
+    {
+        $rand = mt_rand(1, 100);
+        
+        if ($rand <= 50) {
+            // 50% 反杀
+            return [
+                'type' => 'reversal',
+                'cost_desc' => '气血亏损，需休养三日',
+                'self_damage' => floor($maxHp * 0.2)
+            ];
+        } elseif ($rand <= 80) {
+            // 30% 同归于尽
+            return [
+                'type' => 'draw',
+                'cost_desc' => '与敌同亡，修为大损，需长期休养',
+                'self_damage' => $hp // 自爆
+            ];
+        } else {
+            // 20% 徒劳
+            return [
+                'type' => 'fail',
+                'cost_desc' => '反击失败，根基受损，修为大幅倒退',
+                'self_damage' => floor($maxHp * 0.5)
+            ];
+        }
+    }
+
+    /**
+     * 获取境界加成
+     */
+    private function getRealmBonus($realmName)
+    {
+        $bonuses = [
+            '练体期' => ['hp' => 0, 'attack' => 0, 'defense' => 0, 'spirit' => 0],
+            '练气期' => ['hp' => 20, 'attack' => 5, 'defense' => 2, 'spirit' => 5],
+            '筑基期' => ['hp' => 50, 'attack' => 15, 'defense' => 8, 'spirit' => 15],
+            '金丹期' => ['hp' => 100, 'attack' => 30, 'defense' => 20, 'spirit' => 30],
+            '元婴期' => ['hp' => 200, 'attack' => 60, 'defense' => 40, 'spirit' => 60],
+            '化神期' => ['hp' => 400, 'attack' => 100, 'defense' => 80, 'spirit' => 100],
+        ];
+        
+        return $bonuses[$realmName] ?? $bonuses['练体期'];
+    }
+
+    /**
+     * 计算百分比
+     */
+    private function calcPercent($current, $max)
+    {
+        if ($max <= 0) return 0;
+        return round(($current / $max) * 100, 1);
+    }
+
+    /**
+     * 解析战斗指令
+     */
+    private function parseCommand($command)
+    {
+        // 攻击指令
+        $attackPatterns = ['攻击', '打', '杀', '揍'];
+        foreach ($attackPatterns as $pattern) {
+            if (mb_strpos($command, $pattern) !== false) {
+                return ['type' => 'attack', 'command' => $command];
+            }
+        }
+        
+        // 防御指令
+        $defendPatterns = ['防御', '防守', '挡', '格挡'];
+        foreach ($defendPatterns as $pattern) {
+            if (mb_strpos($command, $pattern) !== false) {
+                return ['type' => 'defend', 'command' => $command];
+            }
+        }
+        
+        // 逃跑指令
+        $fleePatterns = ['逃跑', '逃跑', '撤', '溜'];
+        foreach ($fleePatterns as $pattern) {
+            if (mb_strpos($command, $pattern) !== false) {
+                return ['type' => 'flee', 'command' => $command];
+            }
+        }
+        
+        // 技能指令
+        $skillPatterns = ['使用', '施放', '施展'];
+        foreach ($skillPatterns as $pattern) {
+            if (mb_strpos($command, $pattern) !== false) {
+                return ['type' => 'skill', 'command' => $command];
+            }
+        }
+        
+        return ['type' => 'unknown', 'command' => $command];
+    }
+
+    /**
+     * 计算战斗奖励
+     */
+    private function calcRewards($enemyHp, $enemyMaxHp)
+    {
+        $healthPercent = $enemyHp / $enemyMaxHp;
+        $baseExp = 50;
+        $baseLingshi = 10;
+        
+        // 击杀获得完整奖励，重伤获得部分
+        if ($healthPercent <= 0) {
+            return [
+                'exp' => $baseExp,
+                'lingshi' => $baseLingshi,
+                'daojin' => floor($baseExp / 10)
+            ];
+        }
+        
+        // 根据剩余血量减少奖励
+        $ratio = 1 - $healthPercent;
+        return [
+            'exp' => floor($baseExp * $ratio),
+            'lingshi' => floor($baseLingshi * $ratio),
+            'daojin' => 0
+        ];
+    }
+
+    /**
+     * 保存战斗记录
+     */
+    private function saveBattleRecord($playerId, $battleType, $result, $damage, $rewards, $playerHp, $playerMaxHp, $playerRealm)
+    {
+        $data = [
+            'player_id' => $playerId,
+            'battle_type' => $battleType,
+            'result' => $result,
+            'damage_dealt' => $damage,
+            'damage_taken' => $playerMaxHp - $playerHp,
+            'reward_exp' => $rewards['exp'] ?? 0,
+            'reward_lingshi' => $rewards['lingshi'] ?? 0,
+            'player_hp_before' => $playerMaxHp,
+            'player_hp_after' => $playerHp,
+            'player_realm' => $playerRealm,
+            'createtime' => time()
+        ];
+        
+        $this->model->table('fa_battle')->insert($data);
+    }
+
+    /**
+     * 获取战斗状态描述
+     */
+    private function getStatusDescription($hp, $maxHp)
+    {
+        $percent = $this->calcPercent($hp, $maxHp);
+        
+        $descriptions = [
+            '气血充盈，神完气足',
+            '周身气血滚滚，战意滔天',
+            '气息平稳，略有消耗',
+            '气血亏损些许',
+            '身负轻伤，招式威力下降',
+            '伤势沉重，举步维艰',
+            '气息将竭，油尽灯枯'
+        ];
+        
+        if ($percent > 80) return $descriptions[array_rand(array_slice($descriptions, 0, 2))];
+        if ($percent > 60) return $descriptions[2];
+        if ($percent > 40) return $descriptions[3];
+        if ($percent > 20) return $descriptions[4];
+        if ($percent > 10) return $descriptions[5];
+        return $descriptions[6];
+    }
+}
+

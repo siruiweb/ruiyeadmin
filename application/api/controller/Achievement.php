@@ -1,0 +1,209 @@
+<?php
+
+namespace app\api\controller;
+
+use app\common\controller\Api;
+
+/**
+ * 成就系统接口 X304/X309
+ */
+class Achievement extends Api
+{
+    protected $noNeedLogin = [];
+    protected $noNeedRight = '*';
+
+    /**
+     * 获取成就列表
+     */
+    public function list()
+    {
+        // 成就配置数据
+        $achievements = [
+            // 战斗类
+            ['id' => 'ach_001', 'name' => '初试锋芒', 'description' => '赢得第一场战斗', 'icon' => '⚔️', 'category' => 'combat', 'rarity' => 'common', 'rarityOrder' => 1, 'target' => 1, 'rewards' => [['type' => 'daojin', 'amount' => 100]]],
+            ['id' => 'ach_002', 'name' => '连胜勇士', 'description' => '连续赢得3场战斗', 'icon' => '🔥', 'category' => 'combat', 'rarity' => 'uncommon', 'rarityOrder' => 2, 'target' => 3, 'rewards' => [['type' => 'daojin', 'amount' => 300]]],
+            ['id' => 'ach_003', 'name' => '百战百胜', 'description' => '赢得100场战斗', 'icon' => '🏅', 'category' => 'combat', 'rarity' => 'rare', 'rarityOrder' => 3, 'target' => 100, 'rewards' => [['type' => 'daojin', 'amount' => 5000]]],
+            ['id' => 'ach_004', 'name' => '战无不胜', 'description' => '赢得1000场战斗', 'icon' => '👑', 'category' => 'combat', 'rarity' => 'epic', 'rarityOrder' => 4, 'target' => 1000, 'rewards' => [['type' => 'daojin', 'amount' => 50000]]],
+            // 资源类
+            ['id' => 'ach_005', 'name' => '小有家底', 'description' => '累计拥有10000灵石', 'icon' => '💰', 'category' => 'resource', 'rarity' => 'common', 'rarityOrder' => 1, 'target' => 10000, 'rewards' => [['type' => 'lingshi', 'amount' => 1000]]],
+            ['id' => 'ach_006', 'name' => '富甲一方', 'description' => '累计拥有100000灵石', 'icon' => '💎', 'category' => 'resource', 'rarity' => 'uncommon', 'rarityOrder' => 2, 'target' => 100000, 'rewards' => [['type' => 'lingshi', 'amount' => 10000]]],
+            ['id' => 'ach_007', 'name' => '腰缠万贯', 'description' => '累计拥有1000000灵石', 'icon' => '🤑', 'category' => 'resource', 'rarity' => 'rare', 'rarityOrder' => 3, 'target' => 1000000, 'rewards' => [['type' => 'lingshi', 'amount' => 100000]]],
+            // 探索类
+            ['id' => 'ach_008', 'name' => '初出茅庐', 'description' => '探索地图100次', 'icon' => '🗺️', 'category' => 'explore', 'rarity' => 'common', 'rarityOrder' => 1, 'target' => 100, 'rewards' => [['type' => 'exp', 'amount' => 1000]]],
+            ['id' => 'ach_009', 'name' => '足迹遍布', 'description' => '探索地图1000次', 'icon' => '🌍', 'category' => 'explore', 'rarity' => 'uncommon', 'rarityOrder' => 2, 'target' => 1000, 'rewards' => [['type' => 'exp', 'amount' => 10000]]],
+            // 社交类
+            ['id' => 'ach_011', 'name' => '初入江湖', 'description' => '添加10个好友', 'icon' => '🤝', 'category' => 'social', 'rarity' => 'common', 'rarityOrder' => 1, 'target' => 10, 'rewards' => [['type' => 'reputation', 'amount' => 100]]],
+            // 特殊类
+            ['id' => 'ach_013', 'name' => '天选之人', 'description' => '首次突破境界', 'icon' => '🌟', 'category' => 'special', 'rarity' => 'rare', 'rarityOrder' => 3, 'target' => 1, 'rewards' => [['type' => 'title', 'amount' => 1]]],
+            ['id' => 'ach_014', 'name' => '道心坚定', 'description' => '完成初心碑问答', 'icon' => '💫', 'category' => 'special', 'rarity' => 'uncommon', 'rarityOrder' => 2, 'target' => 1, 'rewards' => [['type' => 'reputation', 'amount' => 500]]],
+        ];
+        
+        $this->success('ok', $achievements);
+    }
+
+    /**
+     * 获取玩家成就进度
+     */
+    public function my()
+    {
+        $playerId = $this->auth->id;
+        
+        // 从数据库获取玩家成就进度
+        $playerAchievements = \app\common\model\PlayerAchievement::where('player_id', $playerId)->select();
+        
+        $data = [];
+        foreach ($playerAchievements as $pa) {
+            $data[$pa->achievement_id] = [
+                'progress' => $pa->progress,
+                'isCompleted' => $pa->is_completed,
+                'isUnlocked' => $pa->is_unlocked,
+                'completedTime' => $pa->completed_time,
+                'rewardClaimed' => $pa->reward_claimed,
+                'rewardPoints' => $pa->reward_points
+            ];
+        }
+        
+        $this->success('ok', $data);
+    }
+
+    /**
+     * 获取成就详情
+     */
+    public function detail()
+    {
+        $id = $this->request->get('id');
+        
+        if (!$id) {
+            $this->error('参数错误');
+        }
+        
+        // 获取成就配置
+        $achievement = \app\common\model\Achievement::getByCode($id);
+        
+        if (!$achievement) {
+            $this->error('成就不存在');
+        }
+        
+        // 获取玩家进度
+        $playerId = $this->auth->id;
+        $playerProgress = \app\common\model\PlayerAchievement::where('player_id', $playerId)
+            ->where('achievement_id', $id)
+            ->find();
+        
+        $data = [
+            'id' => $achievement->id,
+            'name' => $achievement->name,
+            'description' => $achievement->description,
+            'icon' => $achievement->icon,
+            'category' => $achievement->category,
+            'rarity' => $achievement->rarity,
+            'target' => $achievement->target,
+            'rewards' => json_decode($achievement->rewards, true),
+            'progress' => $playerProgress ? $playerProgress->progress : 0,
+            'isCompleted' => $playerProgress ? $playerProgress->is_completed : false,
+            'isUnlocked' => $playerProgress ? $playerProgress->is_unlocked : true
+        ];
+        
+        $this->success('ok', $data);
+    }
+
+    /**
+     * 领取成就奖励
+     */
+    public function claim()
+    {
+        $achievementId = $this->request->post('achievement_id');
+        
+        if (!$achievementId) {
+            $this->error('参数错误');
+        }
+        
+        $playerId = $this->auth->id;
+        
+        // 获取成就进度
+        $playerProgress = \app\common\model\PlayerAchievement::where('player_id', $playerId)
+            ->where('achievement_id', $achievementId)
+            ->find();
+        
+        if (!$playerProgress || !$playerProgress->is_completed) {
+            $this->error('成就未完成');
+        }
+        
+        if ($playerProgress->reward_claimed) {
+            $this->error('奖励已领取');
+        }
+        
+        // 获取成就配置
+        $achievement = \app\common\model\Achievement::getByCode($achievementId);
+        $rewards = json_decode($achievement->rewards, true);
+        
+        // 发放奖励
+        $player = \app\common\model\Player::getByUserId($playerId);
+        
+        foreach ($rewards as $reward) {
+            switch ($reward['type']) {
+                case 'daojin':
+                    $player->daojin += $reward['amount'];
+                    break;
+                case 'lingshi':
+                    $player->lingshi += $reward['amount'];
+                    break;
+                case 'exp':
+                    $player->exp += $reward['amount'];
+                    break;
+            }
+        }
+        $player->save();
+        
+        // 更新领取状态
+        $playerProgress->reward_claimed = true;
+        $playerProgress->save();
+        
+        $this->success('领取成功', ['rewards' => $rewards]);
+    }
+
+    /**
+     * 获取成就点数
+     */
+    public function points()
+    {
+        $playerId = $this->auth->id;
+        
+        $points = \app\common\model\PlayerAchievement::where('player_id', $playerId)
+            ->where('is_completed', 1)
+            ->sum('reward_points');
+        
+        $this->success('ok', ['points' => $points]);
+    }
+
+    /**
+     * 获取成就进度（按分类）
+     */
+    public function progress()
+    {
+        $category = $this->request->get('category', 'all');
+        
+        // 获取配置和玩家进度的组合数据
+        $achievements = $this->list()['data'] ?? [];
+        
+        if ($category !== 'all') {
+            $achievements = array_filter($achievements, function($a) use ($category) {
+                return $a['category'] === $category;
+            });
+        }
+        
+        $playerId = $this->auth->id;
+        $playerProgress = \app\common\model\PlayerAchievement::where('player_id', $playerId)->select();
+        
+        $progressMap = [];
+        foreach ($playerProgress as $p) {
+            $progressMap[$p->achievement_id] = $p->progress;
+        }
+        
+        foreach ($achievements as &$a) {
+            $a['progress'] = $progressMap[$a['id']] ?? 0;
+        }
+        
+        $this->success('ok', array_values($achievements));
+    }
+}
